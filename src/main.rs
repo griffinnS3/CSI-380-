@@ -220,105 +220,118 @@ impl fmt::Display for ClassificationResult {
         Ok(())
     }
 }
+use std::fs::File;
+use std::io::{Read, BufReader};
+
+fn read_u32_be(reader: &mut impl Read) -> u32 {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf).unwrap();
+    u32::from_be_bytes(buf)
+}
+
+pub fn load_mnist_images(path: &str) -> Vec<Image> {
+    let f = File::open(path).expect("Cannot open image file");
+    let mut r = BufReader::new(f);
+
+    let magic = read_u32_be(&mut r);
+    assert_eq!(magic, 0x0803, "Bad image file magic");
+
+    let count  = read_u32_be(&mut r) as usize;
+    let rows   = read_u32_be(&mut r) as usize;
+    let cols   = read_u32_be(&mut r) as usize;
+
+    let pixel_count = rows * cols;
+    let mut images = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let mut raw = vec![0u8; pixel_count];
+        r.read_exact(&mut raw).unwrap();
+        images.push(Image::from_raw(cols, rows, raw));
+    }
+    images
+}
+
+pub fn load_mnist_labels(path: &str) -> Vec<u8> {
+    let f = File::open(path).expect("Cannot open label file");
+    let mut r = BufReader::new(f);
+
+    let magic = read_u32_be(&mut r);
+    assert_eq!(magic, 0x0801, "Bad label file magic");
+
+    let count = read_u32_be(&mut r) as usize;
+    let mut labels = vec![0u8; count];
+    r.read_exact(&mut labels).unwrap();
+    labels
+}
+pub fn build_mean_templates(
+    images: &[Image],
+    labels: &[u8],
+    num_classes: usize,
+) -> Vec<(String, Image)> {
+    let (w, h) = (images[0].width, images[0].height);
+    let pixel_count = w * h;
+
+    let mut accum  = vec![vec![0f64; pixel_count]; num_classes];
+    let mut counts = vec![0usize; num_classes];
+
+    for (img, &label) in images.iter().zip(labels.iter()) {
+        let cls = label as usize;
+        counts[cls] += 1;
+        for (acc, &px) in accum[cls].iter_mut().zip(img.data.iter()) {
+            *acc += px as f64;
+        }
+    }
+
+    (0..num_classes)
+        .map(|cls| {
+            let n = counts[cls] as f64;
+            let mean_pixels: Vec<f32> = accum[cls].iter()
+                .map(|&s| (s / n) as f32)
+                .collect();
+            let tmpl_image = Image { width: w, height: h, data: mean_pixels };
+            (cls.to_string(), tmpl_image)
+        })
+        .collect()
+}
 
 // ─── Demo ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Synthetic 8×8 grayscale images.
-    // "circle-like" pattern (bright centre, dark edges)
-    #[rustfmt::skip]
-    let circle_raw: Vec<u8> = vec![
-         10,  20,  50,  80,  80,  50,  20,  10,
-         20,  60, 120, 180, 180, 120,  60,  20,
-         50, 120, 200, 240, 240, 200, 120,  50,
-         80, 180, 240, 255, 255, 240, 180,  80,
-         80, 180, 240, 255, 255, 240, 180,  80,
-         50, 120, 200, 240, 240, 200, 120,  50,
-         20,  60, 120, 180, 180, 120,  60,  20,
-         10,  20,  50,  80,  80,  50,  20,  10,
-    ];
+    // --- Download and unzip MNIST from http://yann.lecun.com/exdb/mnist/
+    // Place the four files in a `data/` folder next to Cargo.toml
+    let train_images = load_mnist_images("data/train-images.idx3-ubyte");
+    let train_labels = load_mnist_labels("data/train-labels.idx1-ubyte");
+    let test_images  = load_mnist_images("data/t10k-images.idx3-ubyte");
+    let test_labels  = load_mnist_labels("data/t10k-labels.idx1-ubyte");
 
-    // "cross-like" pattern
-    #[rustfmt::skip]
-    let cross_raw: Vec<u8> = vec![
-         10,  10,  10, 200, 200,  10,  10,  10,
-         10,  10,  10, 200, 200,  10,  10,  10,
-         10,  10,  10, 200, 200,  10,  10,  10,
-        200, 200, 200, 200, 200, 200, 200, 200,
-        200, 200, 200, 200, 200, 200, 200, 200,
-         10,  10,  10, 200, 200,  10,  10,  10,
-         10,  10,  10, 200, 200,  10,  10,  10,
-         10,  10,  10, 200, 200,  10,  10,  10,
-    ];
+    println!("Loaded {} train, {} test samples", train_images.len(), test_images.len());
 
-    // "square-like" pattern (bright border, dark interior)
-    #[rustfmt::skip]
-    let square_raw: Vec<u8> = vec![
-        220, 220, 220, 220, 220, 220, 220, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220,  20,  20,  20,  20,  20,  20, 220,
-        220, 220, 220, 220, 220, 220, 220, 220,
-    ];
+    // Build one mean template per digit class (0–9)
+    let templates = build_mean_templates(&train_images, &train_labels, 10);
 
-    let circle_tmpl = Image::from_raw(8, 8, circle_raw.clone());
-    let cross_tmpl  = Image::from_raw(8, 8, cross_raw.clone());
-    let square_tmpl = Image::from_raw(8, 8, square_raw.clone());
+    let mut clf = TemplateClassifier::new(Metric::NCC, (28, 28));
+    for (label, img) in templates {
+        clf.add_template(label, img);
+    }
 
-    // Build classifier with NCC metric, canonical size 8×8.
-    let mut clf = TemplateClassifier::new(Metric::NCC, (8, 8));
-    clf.add_template("circle", circle_tmpl);
-    clf.add_template("cross",  cross_tmpl);
-    clf.add_template("square", square_tmpl);
+    // Evaluate
+    let mut correct = 0usize;
+    let total = test_images.len();
 
-    println!("=== Template Matching Image Classifier ===\n");
-    println!("Metric         : {}", clf.metric);
-    println!("Canonical size : {}×{}\n", clf.canonical_size.0, clf.canonical_size.1);
+    for (i, (img, &true_label)) in test_images.iter().zip(test_labels.iter()).enumerate() {
+        let result = clf.classify(img);
+        let predicted: u8 = result.label.parse().unwrap();
+        if predicted == true_label {
+            correct += 1;
+        }
+        // Print progress every 1000 samples
+        if (i + 1) % 1000 == 0 {
+            println!("  [{}/{}]  running accuracy: {:.2}%",
+                i + 1, total,
+                100.0 * correct as f32 / (i + 1) as f32);
+        }
+    }
 
-    // ── Test 1: noisy circle (should classify as "circle") ──
-    let noisy_circle: Vec<u8> = circle_raw.iter()
-        .enumerate()
-        .map(|(i, &p)| p.saturating_add(if i % 3 == 0 { 15 } else { 0 })
-                        .saturating_sub(if i % 5 == 0 { 10 } else { 0 }))
-        .collect();
-    let query1 = Image::from_raw(8, 8, noisy_circle);
-
-    println!("--- Query 1: noisy circle ---");
-    let result1 = clf.classify(&query1);
-    println!("{}", result1);
-
-    // ── Test 2: noisy cross (should classify as "cross") ──
-    let noisy_cross: Vec<u8> = cross_raw.iter()
-        .enumerate()
-        .map(|(i, &p)| p.saturating_add(if i % 7 == 0 { 20 } else { 0 }))
-        .collect();
-    let query2 = Image::from_raw(8, 8, noisy_cross);
-
-    println!("--- Query 2: noisy cross ---");
-    let result2 = clf.classify(&query2);
-    println!("{}", result2);
-
-    // ── Test 3: upscaled square (16×16 → resized to 8×8 for comparison) ──
-    let big_square: Vec<u8> = {
-        let small = Image::from_raw(8, 8, square_raw);
-        let big   = small.resize(16, 16);
-        big.data.iter().map(|&p| (p * 255.0) as u8).collect()
-    };
-    let query3 = Image::from_raw(16, 16, big_square);
-
-    println!("--- Query 3: upscaled square (16×16) ---");
-    let result3 = clf.classify(&query3);
-    println!("{}", result3);
-
-    // ── Test 4: same queries using SSD metric ──
-    let mut clf_ssd = TemplateClassifier::new(Metric::SSD, (8, 8));
-    clf_ssd.add_template("circle", Image::from_raw(8, 8, circle_raw.clone()));
-    clf_ssd.add_template("cross",  Image::from_raw(8, 8, cross_raw.clone()));
-
-    println!("--- Query 4: noisy circle using SSD metric ---");
-    let result4 = clf_ssd.classify(&query1);
-    println!("{}", result4);
+    println!("\nFinal accuracy: {}/{} = {:.2}%", correct, total,
+        100.0 * correct as f32 / total as f32);
 }

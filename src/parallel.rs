@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-
+//hey so this project is data parallelism
 // ─── Image Representation ───────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]

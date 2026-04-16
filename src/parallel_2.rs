@@ -201,7 +201,7 @@ pub fn build_kmeans_templates(
 
             let k = templates_per_class.min(class_images.len());
             let centroids = kmeans(&class_images, k, kmeans_iters);
-            centroids.into_par_iter().map(move |c| (label, c))
+            centroids.into_iter().map(move |c| (label, c))
         })
         .collect()
 }
@@ -291,7 +291,7 @@ pub fn load_mnist_labels(path: &str) -> Vec<u8> {
 
 // ─── MAIN ───────────────────────────────────────────────────────────────────
 
-const TEMPLATES_PER_CLASS: usize = 10;
+const TEMPLATES_PER_CLASS: usize = 200;
 const KMEANS_ITERS: usize = 20;
 
 fn main() {

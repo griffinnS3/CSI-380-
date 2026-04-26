@@ -31,3 +31,6 @@ after that the dataset should be all set and ready for you to use
 
 Any version of Rust over 1.60 should run the program
 to run use cargo --run
+
+To run you should at least have 4gb of ram and a cpu that has at least two cores
+
